@@ -1,0 +1,141 @@
+name: Build OFOX Recovery
+
+on:
+  workflow_dispatch:
+    inputs:
+      MANIFEST_BRANCH:
+        description: 'Branch of the manifest repository'
+        required: true
+        default: '12.1'
+      DEVICE_NAME:
+        description: 'Device name'
+        required: true
+        default: 'P661N'
+      BUILD_TARGET:
+        description: 'Build target (e.g. boot, recovery)'
+        required: true
+        default: 'boot'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check Out
+        uses: actions/checkout@v3
+        with:
+          repository: KernelBuilding/RecoveryTree-Itel-P55-5G
+          ref: OFOX_A13
+          
+      - name: Cleanup
+        uses: rokibhasansagar/slimhub_actions@main
+
+      - name: Initialize workspace
+        run: |
+          mkdir workspace
+          cd workspace
+          echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
+        id: pwd
+
+      - name: Prepare the build environment
+        run: |
+          sudo apt install git aria2 -y
+          git clone https://gitlab.com/OrangeFox/misc/scripts
+          cd scripts
+          sudo bash setup/android_build_env.sh
+          sed -i 's/cd -/cd ../g' setup/install_android_sdk.sh
+          sudo bash setup/install_android_sdk.sh
+        working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+      - name: Sync OrangeFox sources and minimal manifest
+        run: |
+          cd ${{ steps.pwd.outputs.workspace-folder }}
+          git clone https://gitlab.com/OrangeFox/sync.git
+          cd sync
+          ./orangefox_sync.sh --branch ${{ github.event.inputs.MANIFEST_BRANCH }} --path ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
+        working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+
+      - name: Copy Device Tree
+        run: |
+          echo $(ls *)
+          mkdir -p ${GITHUB_WORKSPACE}/workspace/fox_12.1/device/itel/${{ github.event.inputs.DEVICE_NAME }}
+          cp Android.mk ${GITHUB_WORKSPACE}/workspace/fox_12.1/device/itel/${{ github.event.inputs.DEVICE_NAME }}
+          cp AndroidProducts.mk ${GITHUB_WORKSPACE}/workspace/fox_12.1/device/itel/${{ github.event.inputs.DEVICE_NAME }}
+          cp BoardConfig.mk ${GITHUB_WORKSPACE}/workspace/fox_12.1/device/itel/${{ github.event.inputs.DEVICE_NAME }}
+          cp device.mk ${GITHUB_WORKSPACE}/workspace/fox_12.1/device/itel/${{ github.event.inputs.DEVICE_NAME }}
+          cp README.md ${GITHUB_WORKSPACE}/workspace/fox_12.1/device/itel/${{ github.event.inputs.DEVICE_NAME }}
+          cp -r mtk_plpath_utils ${GITHUB_WORKSPACE}/workspace/fox_12.1/device/itel/${{ github.event.inputs.DEVICE_NAME }}
+          cp -r bootctrl ${GITHUB_WORKSPACE}/workspace/fox_12.1/device/itel/${{ github.event.inputs.DEVICE_NAME }}
+          cp -r prebuilt ${GITHUB_WORKSPACE}/workspace/fox_12.1/device/itel/${{ github.event.inputs.DEVICE_NAME }}
+          cp system.prop ${GITHUB_WORKSPACE}/workspace/fox_12.1/device/itel/${{ github.event.inputs.DEVICE_NAME }}
+          cp twrp_P661N.mk ${GITHUB_WORKSPACE}/workspace/fox_12.1/device/itel/${{ github.event.inputs.DEVICE_NAME }}
+          cp -r recovery ${GITHUB_WORKSPACE}/workspace/fox_12.1/device/itel/${{ github.event.inputs.DEVICE_NAME }}
+
+      - name: Set Swap Space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 12
+
+      - name: Building recovery
+        run: |
+          cd ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}
+          set +e
+          source build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export TARGET_DEVICE_ALT="itel-P661N,P661N"
+          export FOX_VERSION="R12.1"
+          export FOX_BUILD_TYPE=Unofficial
+          export OF_MAINTAINER="PGYT PROJECT"
+          export FOX_VIRTUAL_AB_DEVICE=1
+          export FOX_AB_DEVICE=1
+          export OF_USE_MAGISKBOOT=1
+          export OF_NO_TREBLE_COMPATIBILITY_CHECK=1
+          export OF_USE_MAGISKBOOT_FOR_ALL_PATCHES=1
+          export OF_SUPPORT_ALL_BLOCK_OTA_UPDATES=0
+          export OF_SUPPORT_ALL_PAYLOAD_OTA_UPDATES=1
+          export BUILD_USERNAME="ProjectKernel2"
+          export BUILD_HOSTNAME="Ubuntu"
+          export FOX_USE_NANO_EDITOR=1
+          export OF_USE_SYSTEM_FINGERPRINT=1
+          export OF_FL_PATH1="/sys/class/torch/torch/torch_level"
+          export FOX_REPLACE_BOOTIMAGE_DATE=1
+          export OF_FBE_METADATA_MOUNT_IGNORE=1
+          export OF_FORCE_DISABLE_DM_VERITY_FORCED_ENCRYPTION=1
+          export OF_FLASHLIGHT_ENABLE=1
+          export OF_NO_TREBLE_COMPATIBILITY_CHECK=1
+          export OF_ENABLE_LPTOOLS=1
+          export TW_TORCH_MAX_BRIGHTNESS=1
+          export OF_TORCH_MAX_BRIGHTNESS=1
+          export FOX_TORCH_MAX_BRIGHTNESS=1
+          export FOX_DELETE_AROMAFM=1
+          export OF_SCREEN_H=2400
+          export FOX_USE_ZIP_BINARY=1
+          export FOX_USE_BASH_SHELL=1
+          set -e
+          lunch twrp_${{ github.event.inputs.DEVICE_NAME }}-eng && make clean && mka adbd ${{ github.event.inputs.BUILD_TARGET }}image -j$(nproc --all)
+        working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+        continue-on-error: true
+
+      - name: Set Release Properties
+        run: |
+          echo "BUILD_DATE=$(TZ=Asia/Jakarta date +%Y%m%d)" >> $GITHUB_ENV
+          echo "MD5_IMG=$(md5sum workspace/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/${{ github.event.inputs.BUILD_TARGET }}.img | cut -d ' ' -f 1)" >> $GITHUB_ENV
+      
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.img
+            ${{ steps.pwd.outputs.workspace-folder }}/fox_${{ github.event.inputs.MANIFEST_BRANCH }}/out/target/product/${{ github.event.inputs.DEVICE_NAME }}/*.zip
+          name: ${{ github.event.inputs.DEVICE_NAME }}-${{ github.run_id }}
+          tag_name: ${{ github.run_id }}
+          body: |
+            ## OFOX Recovery - Unofficial
+            Devices : ${{ github.event.inputs.DEVICE_NAME }}
+            Build Date : ${{ env.BUILD_DATE }}
+            ## MD5 Files
+            MD5 IMG    : ${{ env.MD5_IMG }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
